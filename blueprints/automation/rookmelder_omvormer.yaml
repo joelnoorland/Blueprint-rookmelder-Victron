@@ -1,0 +1,190 @@
+blueprint:
+  name: Rookmelder – Omvormer uitschakelen (sirene, bevestiging & logboek)
+  description: >
+    Stuurt een notificatie bij rookdetectie.
+    Bevestigen of geen reactie binnen de ingestelde tijd schakelt de omvormer uit.
+    Afwijzen (loos alarm) doet niets.
+    Optionele sirene, bevestigingsnotificatie én logboekregistratie.
+  domain: automation
+
+  input:
+    smoke_sensor:
+      name: Rookmelder
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: smoke
+
+    inverter_switch:
+      name: Omvormer (schakelaar)
+      selector:
+        entity:
+          domain: switch
+
+    notify_device:
+      name: Telefoon (Home Assistant app)
+      selector:
+        device:
+          integration: mobile_app
+
+    timeout_minutes:
+      name: Wachtijd (minuten)
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 10
+          unit_of_measurement: minuten
+          mode: slider
+
+    siren_entity:
+      name: Sirene (optioneel)
+      default: null
+      selector:
+        entity:
+          domain:
+            - siren
+            - switch
+
+    send_confirmation:
+      name: Bevestigingsnotificatie sturen
+      default: true
+      selector:
+        boolean:
+
+    enable_logbook:
+      name: Logboek inschakelen
+      default: true
+      selector:
+        boolean:
+
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: !input smoke_sensor
+    to: "on"
+
+action:
+  # Log rookdetectie
+  - choose:
+      - conditions:
+          - condition: boolean
+            value_template: !input enable_logbook
+        sequence:
+          - service: logbook.log
+            data:
+              name: Rookmelder
+              message: "Rook gedetecteerd – automatisering gestart"
+              entity_id: !input smoke_sensor
+
+  # Optionele sirene
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ siren_entity is not none }}"
+        sequence:
+          - service: >
+              {% if states[siren_entity].domain == 'siren' %}
+              siren.turn_on
+              {% else %}
+              switch.turn_on
+              {% endif %}
+            target:
+              entity_id: !input siren_entity
+
+          - choose:
+              - conditions:
+                  - condition: boolean
+                    value_template: !input enable_logbook
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: Sirene
+                      message: "Sirene geactiveerd"
+                      entity_id: !input siren_entity
+
+  # Notificatie
+  - service: notify.mobile_app_{{ device_id(notify_device) }}
+    data:
+      title: "🚨 Rook gedetecteerd!"
+      message: >
+        Bevestig om de omvormer uit te schakelen.
+        Geen reactie binnen {{ timeout_minutes }} minuten = automatisch uitschakelen.
+      data:
+        actions:
+          - action: CONFIRM_SHUTDOWN
+            title: "🔌 Omvormer uitschakelen"
+          - action: IGNORE
+            title: "❌ Loos alarm"
+
+  # Wacht op actie
+  - wait_for_trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: CONFIRM_SHUTDOWN
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: IGNORE
+    timeout:
+      minutes: !input timeout_minutes
+    continue_on_timeout: true
+
+  # Beslissing
+  - choose:
+      # Loos alarm
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ wait.trigger is not none and
+                 wait.trigger.event.data.action == 'IGNORE' }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: boolean
+                    value_template: !input enable_logbook
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: Rookmelder
+                      message: "Actie genegeerd (loos alarm)"
+                      entity_id: !input smoke_sensor
+
+      # Bevestigd of timeout
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ wait.trigger is none or
+                 wait.trigger.event.data.action == 'CONFIRM_SHUTDOWN' }}
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input inverter_switch
+
+          - choose:
+              - conditions:
+                  - condition: boolean
+                    value_template: !input enable_logbook
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: Omvormer
+                      message: >
+                        {% if wait.trigger is none %}
+                        Geen reactie binnen tijd – omvormer automatisch uitgeschakeld
+                        {% else %}
+                        Bevestigd door gebruiker – omvormer uitgeschakeld
+                        {% endif %}
+                      entity_id: !input inverter_switch
+
+          - choose:
+              - conditions:
+                  - condition: boolean
+                    value_template: !input send_confirmation
+                sequence:
+                  - service: notify.mobile_app_{{ device_id(notify_device) }}
+                    data:
+                      title: "✅ Omvormer uitgeschakeld"
+                      message: "De omvormer is veilig uitgeschakeld."
