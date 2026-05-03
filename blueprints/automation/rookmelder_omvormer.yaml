@@ -20,7 +20,7 @@ blueprint:
             - select
 
     notify_service:
-      name: Notificatie service
+      name: Notificatie service (mobiele app)
       selector:
         entity:
           domain: notify
@@ -207,7 +207,7 @@ action:
               - condition: template
                 value_template: "{{ confirm_enabled }}"
             then:
-              - service: notify.mobile_app_{{ device_id(notify_device) }}
+              - service: !input notify_service
                 data:
                   title: "✅ Omvormer uitgeschakeld"
                   message: "De omvormer is veilig uitgeschakeld."
