@@ -1,8 +1,6 @@
 blueprint:
 name: Rookmelder – Omvormer uitschakelen (sirene, bevestiging & logboek)
-description: > Stuurt een notificatie bij rookdetectie.
-Bevestigen of geen reactie binnen de ingestelde tijd schakelt de omvormer uit.
-Ondersteunt zowel switch als select entities.
+description: "Stuurt een notificatie bij rookdetectie. Bevestigen of geen reactie binnen de ingestelde tijd schakelt de omvormer uit. Ondersteunt zowel switch als select entities."
 domain: automation
 
 input:
