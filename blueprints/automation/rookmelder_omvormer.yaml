@@ -111,7 +111,7 @@ action:
                   entity_id: "{{ siren }}"
 
   # Notificatie
-  - service: notify.mobile_app_{{ device_id(notify_device) }}
+  - service: !input notify_service
     data:
       title: "🚨 Rook gedetecteerd!"
       message: >
