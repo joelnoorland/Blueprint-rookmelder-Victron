@@ -1,6 +1,9 @@
 blueprint:
-  name: Rookmelder – Omvormer uitschakelen (sirene, bevestiging & logboek)
-  description: "Stuurt notificatie bij rook en schakelt omvormer uit na bevestiging of timeout. Werkt met switch en select."
+  name: Rookmelder – Omvormer uitschakelen (met testmodus)
+  description: >
+    Stuurt notificatie bij rookdetectie.
+    Schakelt omvormer uit na bevestiging of timeout,
+    of voert een veilige test uit zonder uitschakeling.
   domain: automation
 
   input:
@@ -19,15 +22,20 @@ blueprint:
             - switch
             - select
 
-    notify_service:
+    shutdown_option:
+      name: Select-waarde bij uitschakelen (alleen bij select)
+      default: "OFF"
+      selector:
+        text:
+
+    notify_device:
       name: Telefoon (Home Assistant app)
       selector:
-        entity:
-          domain: notify
+        device:
           integration: mobile_app
 
     timeout_minutes:
-      name: Wachtijd (minuten)
+      name: Timeout (minuten)
       default: 2
       selector:
         number:
@@ -36,24 +44,18 @@ blueprint:
           unit_of_measurement: minuten
           mode: slider
 
-    shutdown_option:
-      name: Select waarde (bijv OFF)
-      default: "OFF"
-      selector:
-        text:
-
     siren_entity:
       name: Sirene (optioneel)
-      default: ""
+      default: null
       selector:
         entity:
           domain:
             - siren
             - switch
 
-    send_confirmation:
-      name: Bevestigingsnotificatie sturen
-      default: true
+    test_mode:
+      name: Testmodus (geen uitschakeling!)
+      default: false
       selector:
         boolean:
 
@@ -73,11 +75,11 @@ trigger:
 action:
   - variables:
       inverter: !input inverter_entity
-      shutdown_value: !input shutdown_option
       siren: !input siren_entity
-      log_enabled: !input enable_logbook
-      confirm_enabled: !input send_confirmation
+      shutdown_value: !input shutdown_option
       timeout_mins: !input timeout_minutes
+      test_mode: !input test_mode
+      log_enabled: !input enable_logbook
 
   # Log rookdetectie
   - if:
@@ -87,50 +89,57 @@ action:
       - service: logbook.log
         data:
           name: Rookmelder
-          message: "Rook gedetecteerd – automatisering gestart"
+          message: >
+            Rook gedetecteerd – automatisering gestart
+            {% if test_mode %}(TESTMODUS){% endif %}
           entity_id: !input smoke_sensor
 
   # Sirene (optioneel)
   - if:
       - condition: template
-        value_template: "{{ siren != '' }}"
+        value_template: "{{ siren is not none }}"
     then:
       - choose:
           - conditions:
               - condition: template
-                value_template: "{{ states[siren].domain == 'siren' }}"
+                value_template: "{{ siren.startswith('siren.') }}"
             sequence:
               - service: siren.turn_on
                 target:
                   entity_id: "{{ siren }}"
           - conditions:
               - condition: template
-                value_template: "{{ states[siren].domain == 'switch' }}"
+                value_template: "{{ siren.startswith('switch.') }}"
             sequence:
               - service: switch.turn_on
                 target:
                   entity_id: "{{ siren }}"
 
   # Notificatie
-  - service: !input notify_service
+  - service: notify.mobile_app_{{ device_id(!input notify_device) }}
     data:
       title: "🚨 Rook gedetecteerd!"
       message: >
+        {% if test_mode %}
+        TESTMODUS actief – omvormer wordt NIET uitgeschakeld.
+        {% else %}
         Bevestig om de omvormer uit te schakelen.
-        Geen reactie binnen {{ timeout_mins }} minuten = automatisch uitschakelen.
+        {% endif %}
+        Geen reactie binnen {{ timeout_mins }} minuten.
       data:
+        tag: rookmelder_omvormer
         actions:
-          - action: CONFIRM_SHUTDOWN
-            title: "🔌 Omvormer uitschakelen"
+          - action: CONFIRM
+            title: "✅ Bevestigen"
           - action: IGNORE
-            title: "❌ Loos alarm"
+            title: "❌ Annuleren"
 
-  # Wachten op reactie
+  # Wachten op actie
   - wait_for_trigger:
       - platform: event
         event_type: mobile_app_notification_action
         event_data:
-          action: CONFIRM_SHUTDOWN
+          action: CONFIRM
       - platform: event
         event_type: mobile_app_notification_action
         event_data:
@@ -142,50 +151,48 @@ action:
   # Beslissing
   - choose:
 
-      # Loos alarm
+      # Genegeerd
       - conditions:
           - condition: template
             value_template: >
               {{ wait.trigger is not none and
                  wait.trigger.event.data.action == 'IGNORE' }}
         sequence:
-          - if:
-              - condition: template
-                value_template: "{{ log_enabled }}"
-            then:
-              - service: logbook.log
-                data:
-                  name: Rookmelder
-                  message: "Actie genegeerd (loos alarm)"
-                  entity_id: !input smoke_sensor
+          - service: logbook.log
+            data:
+              name: Rookmelder
+              message: "Actie geannuleerd door gebruiker"
+              entity_id: !input smoke_sensor
 
-      # Shutdown
+      # Bevestigd of timeout
       - conditions:
           - condition: template
-            value_template: >
-              {{ wait.trigger is none or
-                 wait.trigger.event.data.action == 'CONFIRM_SHUTDOWN' }}
+            value_template: "{{ wait.trigger is none or wait.trigger.event.data.action == 'CONFIRM' }}"
         sequence:
 
-          # Switch / Select detectie
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ states[inverter].domain == 'switch' }}"
-                sequence:
-                  - service: switch.turn_off
-                    target:
-                      entity_id: "{{ inverter }}"
+          # Alleen uitschakelen als geen testmodus
+          - if:
+              - condition: template
+                value_template: "{{ not test_mode }}"
+            then:
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ inverter.startswith('switch.') }}"
+                    sequence:
+                      - service: switch.turn_off
+                        target:
+                          entity_id: "{{ inverter }}"
 
-              - conditions:
-                  - condition: template
-                    value_template: "{{ states[inverter].domain == 'select' }}"
-                sequence:
-                  - service: select.select_option
-                    target:
-                      entity_id: "{{ inverter }}"
-                    data:
-                      option: "{{ shutdown_value }}"
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ inverter.startswith('select.') }}"
+                    sequence:
+                      - service: select.select_option
+                        target:
+                          entity_id: "{{ inverter }}"
+                        data:
+                          option: "{{ shutdown_value }}"
 
           # Logboek
           - if:
@@ -196,19 +203,32 @@ action:
                 data:
                   name: Omvormer
                   message: >
-                    {% if wait.trigger is none %}
-                    Geen reactie – automatisch uitgeschakeld
+                    {% if test_mode %}
+                    TESTMODUS – geen uitschakeling uitgevoerd
+                    {% elif wait.trigger is none %}
+                    Automatisch uitgeschakeld (timeout)
                     {% else %}
-                    Bevestigd – omvormer uitgeschakeld
+                    Uitgeschakeld na bevestiging
                     {% endif %}
                   entity_id: "{{ inverter }}"
 
-          # Bevestiging
+          # Sirene uit
           - if:
               - condition: template
-                value_template: "{{ confirm_enabled }}"
+                value_template: "{{ siren is not none }}"
             then:
-              - service: notify.mobile_app_{{ device_id(notify_device) }}
-                data:
-                  title: "✅ Omvormer uitgeschakeld"
-                  message: "De omvormer is veilig uitgeschakeld."
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ siren.startswith('siren.') }}"
+                    sequence:
+                      - service: siren.turn_off
+                        target:
+                          entity_id: "{{ siren }}"
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ siren.startswith('switch.') }}"
+                    sequence:
+                      - service: switch.turn_off
+                        target:
+                          entity_id: "{{ siren }}"
