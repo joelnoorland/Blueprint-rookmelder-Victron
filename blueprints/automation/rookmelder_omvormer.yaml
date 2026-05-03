@@ -24,6 +24,7 @@ blueprint:
       selector:
         entity:
           domain: notify
+          integration: mobile_app
 
     timeout_minutes:
       name: Wachtijd (minuten)
