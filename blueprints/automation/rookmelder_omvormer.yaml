@@ -19,11 +19,11 @@ blueprint:
             - switch
             - select
 
-    notify_device:
-      name: Telefoon (Home Assistant app)
+    notify_service:
+      name: Notificatie service
       selector:
-        device:
-          integration: mobile_app
+        entity:
+          domain: notify
 
     timeout_minutes:
       name: Wachtijd (minuten)
